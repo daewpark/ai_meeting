@@ -46,26 +46,39 @@ document.addEventListener('DOMContentLoaded', () => {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             stream.getTracks().forEach(track => track.stop());
 
-            recognition.start();
             isRecording = true;
-            updateUIState(true);
+            recognition.start();
+            // "녹음 중" UI 전환은 실제로 인식이 시작된 뒤(recognition.onstart)에 처리합니다.
         } catch (e) {
-            console.error("마이크 권한 에러:", e);
-            if (isExtension) {
-                if (isChrome) {
-                    transcriptArea.value = '※ 마이크 접근 권한이 필요합니다.\n새 탭이 열리면 화면 좌측 상단(주소창 옆)에서 마이크 권한을 [허용]해 주신 뒤 탭을 닫아주세요!\n이후 사이드바에서 다시 [녹음 시작]을 누르면 정상 작동합니다.\n\n' + transcriptArea.value;
-                } else if (isEdge) {
-                    transcriptArea.value = '※ [Edge 확장프로그램] 마이크 접근 권한이 필요합니다.\n새 탭이 열리면 마이크 권한을 [허용]으로 변경해주세요.\n\n' + transcriptArea.value;
-                }
-                if (chrome.tabs) chrome.tabs.create({ url: chrome.runtime.getURL("index.html") });
-            } else {
-                if (isEdge) {
-                    transcriptArea.value = '※ [Edge 브라우저] 마이크 권한이 차단되었습니다.\n화면 우측 상단 주소창 옆의 [자물쇠] 또는 [설정] 아이콘을 눌러 마이크 권한을 [허용]해주세요.\n\n' + transcriptArea.value;
-                } else if (isChrome) {
-                    transcriptArea.value = '※ [Chrome 브라우저] 마이크 권한이 차단되었습니다.\n주소창 좌측 상단의 [설정(아이콘)]을 클릭해 마이크 권한을 켜주세요.\n\n' + transcriptArea.value;
+            console.error("녹음 시작 에러:", e);
+            isRecording = false;
+            updateUIState(false);
+
+            // getUserMedia가 거부된 경우에만 마이크 "권한" 문제입니다.
+            // recognition.start()에서 던진 다른 종류의 에러(예: InvalidStateError)를
+            // 권한 문제로 오인해 안내하지 않도록 구분합니다.
+            const isPermissionError = e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError';
+
+            if (isPermissionError) {
+                if (isExtension) {
+                    if (isChrome) {
+                        transcriptArea.value = '※ 마이크 접근 권한이 필요합니다.\n새 탭이 열리면 화면 좌측 상단(주소창 옆)에서 마이크 권한을 [허용]해 주신 뒤 탭을 닫아주세요!\n이후 사이드바에서 다시 [녹음 시작]을 누르면 정상 작동합니다.\n\n' + transcriptArea.value;
+                    } else if (isEdge) {
+                        transcriptArea.value = '※ [Edge 확장프로그램] 마이크 접근 권한이 필요합니다.\n새 탭이 열리면 마이크 권한을 [허용]으로 변경해주세요.\n\n' + transcriptArea.value;
+                    }
+                    if (chrome.tabs) chrome.tabs.create({ url: chrome.runtime.getURL("index.html") });
                 } else {
-                    transcriptArea.value = '※ 마이크 권한이 필요합니다. 브라우저 설정에서 권한을 허용해주세요.\n\n' + transcriptArea.value;
+                    if (isEdge) {
+                        transcriptArea.value = '※ [Edge 브라우저] 마이크 권한이 차단되었습니다.\n화면 우측 상단 주소창 옆의 [자물쇠] 또는 [설정] 아이콘을 눌러 마이크 권한을 [허용]해주세요.\n\n' + transcriptArea.value;
+                    } else if (isChrome) {
+                        transcriptArea.value = '※ [Chrome 브라우저] 마이크 권한이 차단되었습니다.\n주소창 좌측 상단의 [설정(아이콘)]을 클릭해 마이크 권한을 켜주세요.\n\n' + transcriptArea.value;
+                    } else {
+                        transcriptArea.value = '※ 마이크 권한이 필요합니다. 브라우저 설정에서 권한을 허용해주세요.\n\n' + transcriptArea.value;
+                    }
                 }
+            } else {
+                // 권한은 정상인데 다른 이유(예: 인식기 상태 오류)로 시작 자체가 실패한 경우
+                transcriptArea.value = `※ 녹음을 시작하지 못했습니다. (${e.name || 'Error'}${e.message ? ': ' + e.message : ''})\n마이크 권한은 정상이지만 다른 문제로 시작이 실패했습니다. 잠시 후 다시 시도해주세요.\n\n` + transcriptArea.value;
             }
         }
     });
@@ -98,11 +111,46 @@ document.addEventListener('DOMContentLoaded', () => {
         if (finalTranscript.length > 30) extractKeywords(finalTranscript);
     };
 
+    recognition.onstart = () => {
+        // 인식 엔진이 실제로 시작을 확인해준 시점에만 "녹음 중" UI로 전환합니다.
+        updateUIState(true);
+    };
+
     recognition.onerror = (event) => {
+        console.error("Speech API 에러:", event.error);
+
         if (event.error === 'not-allowed') {
             console.error("Speech API 차단됨");
             stopBtn.click();
+            return;
         }
+
+        if (event.error === 'network' || event.error === 'service-not-allowed') {
+            // Edge에서 마이크 권한은 정상인데도 음성인식 서버 연결이 막혀 발생하는 경우가 많습니다
+            // (사내망/프록시 환경, 또는 브라우저 자체 버그). 지금까지는 이 에러를 무시해서
+            // 화면은 "녹음 중"으로 보이지만 실제로는 아무것도 인식되지 않는 문제가 있었습니다.
+            isRecording = false;
+            updateUIState(false);
+            transcriptArea.value = `※ 음성인식 서버에 연결하지 못했습니다. (${event.error})\n마이크 권한은 정상이지만, 네트워크(사내망/프록시 등) 또는 브라우저 문제로 음성인식이 실패했을 수 있습니다.\n다른 네트워크에서 다시 시도하거나 잠시 후 다시 시도해주세요.\n\n` + transcriptArea.value;
+            return;
+        }
+
+        if (event.error === 'audio-capture') {
+            isRecording = false;
+            updateUIState(false);
+            transcriptArea.value = '※ 마이크 장치를 찾을 수 없습니다. 마이크가 연결되어 있는지, 다른 프로그램이 마이크를 사용 중인지 확인해주세요.\n\n' + transcriptArea.value;
+            return;
+        }
+
+        if (event.error === 'no-speech') {
+            // 무음이 감지된 것뿐이므로 계속 듣기 상태를 유지합니다 (onend에서 자동 재시작).
+            return;
+        }
+
+        // 그 외 알 수 없는 에러
+        isRecording = false;
+        updateUIState(false);
+        transcriptArea.value = `※ 알 수 없는 오류로 녹음이 중단되었습니다. (${event.error})\n\n` + transcriptArea.value;
     };
 
     recognition.onend = () => {
