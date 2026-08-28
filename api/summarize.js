@@ -367,7 +367,9 @@ ${transcript}
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 2000,
+      // 회의가 길어서 안건/액션아이템이 많으면 리포트 자체가 길어질 수 있어 넉넉하게 잡습니다.
+      // (한도일 뿐 실제 청구는 실제로 생성된 토큰만큼만 되므로, 짧은 회의의 비용에는 영향이 없습니다.)
+      max_tokens: 4096,
       messages: [{ role: 'user', content: summaryPrompt }],
     }),
   });
@@ -378,6 +380,19 @@ ${transcript}
   }
 
   const claudeData = await claudeRes.json();
+
+  // 응답이 max_tokens 한도에 걸려 중간에 잘린 경우, 잘린 마크다운으로 어설프게 Notion 페이지를
+  // 만드는 대신(예: 표가 한 칸만 있는 상태로 저장됨) 명확한 실패로 처리합니다.
+  if (claudeData.stop_reason === 'max_tokens') {
+    return jsonResponse(
+      {
+        error: 'AI 응답이 너무 길어져 중간에 잘렸습니다.',
+        detail: '회의 내용이 많아 요약 결과가 응답 길이 한도를 초과했습니다. 다시 시도해도 반복되면 관리자에게 문의해주세요.',
+      },
+      502
+    );
+  }
+
   const rawText = ((claudeData.content && claudeData.content[0] && claudeData.content[0].text) || '').trim();
   const reportMarkdown = rawText || '(AI 응답이 비어 있습니다.)';
   const title = extractTitle(reportMarkdown) || '회의록 요약';
