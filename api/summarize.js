@@ -1,5 +1,5 @@
 // ============================================================================
-// api/summarize.js — Vercel Edge Function
+// api/summarize.js — Vercel Function (Node.js 런타임)
 //
 // 회의록 앱의 "AI 요약 → Notion" 버튼이 호출하는 백엔드입니다.
 // 이 파일이 /api 폴더에 있으면 Vercel이 자동으로 https://내사이트.vercel.app/api/summarize
@@ -12,9 +12,17 @@
 // 저장되고, 브라우저(script.js)는 절대 이 키들을 알지 못합니다.
 //
 // 배포 방법은 SETUP_VERCEL.md를 참고하세요.
-// ============================================================================
-
-export const config = { runtime: 'edge' };
+//
+// 2026-08-28: 원래 `runtime: 'edge'`로 배포했었는데, Vercel이 Edge Functions를
+// 공식적으로 지원 중단(신규 프로젝트에 사용 비권장)했고, 스트리밍이 아닌 일반
+// 요청·응답 방식은 사실상 25초 안팎으로 처리를 끝내야 하는 제약이 있었습니다.
+// 이 함수는 Claude 요약 요청 → Notion 파일 업로드(2단계) → Notion 페이지 생성까지
+// 순차적으로 네트워크 호출을 하기 때문에, 회의가 길어질수록 이 제약에 걸려
+// 타임아웃으로 실패할 위험이 있었습니다. 기본 Node.js 런타임(Hobby 플랜 기준
+// 기본 최대 300초)으로 옮겨서 이 위험을 크게 줄였습니다. `fetch`/`FormData`/`Blob`/
+// `Request`/`Response` 등 여기서 쓰는 API는 Node.js 런타임에서도 동일하게
+// 전역으로 제공되므로, 아래 로직은 Edge일 때와 완전히 동일합니다 — 바뀐 건
+// export 방식(런타임에 함수를 등록하는 방법)뿐입니다.
 
 // 사용할 Claude 모델. 더 저렴하게 하려면 claude-haiku-4-5, 더 고품질을 원하면
 // claude-opus-4-8로 바꿀 수 있습니다.
@@ -270,7 +278,8 @@ async function uploadTranscriptAsFile(transcript, filename) {
   };
 }
 
-export default async function handler(request) {
+export default {
+async fetch(request) {
   if (request.method !== 'POST') {
     return jsonResponse({ error: 'POST 요청만 지원합니다.' }, 405);
   }
@@ -430,4 +439,5 @@ ${transcript}
 
   const notionData = await notionRes.json();
   return jsonResponse({ ok: true, title, url: notionData.url }, 200);
-}
+},
+};
