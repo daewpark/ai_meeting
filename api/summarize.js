@@ -240,6 +240,13 @@ const NOTION_FILE_API_VERSION = '2026-03-11';
 
 // 회의 원문을 .txt 파일로 Notion에 직접 업로드하고, 그 파일을 가리키는 file 블록을 돌려줍니다.
 // 업로드가 조금이라도 실패하면 예외를 던지고, 호출한 쪽에서 텍스트 블록으로 대체합니다.
+//
+// 한글이 깨져 보이는 문제 방지: Content-Type에 charset=utf-8을 명시하고(브라우저가 인코딩을
+// 잘못 추측해 한글을 깨진 문자로 표시하는 것을 방지), 파일 맨 앞에 UTF-8 BOM을 붙입니다
+// (BOM이 없으면 Windows 메모장 등 일부 프로그램이 한글을 시스템 기본 인코딩(CP949)으로
+// 잘못 해석해서 깨진 문자로 보여주는 경우가 있습니다 — BOM을 보면 UTF-8로 정확히 인식합니다).
+const UTF8_BOM = '﻿';
+
 async function uploadTranscriptAsFile(transcript, filename) {
   const createRes = await fetch('https://api.notion.com/v1/file_uploads', {
     method: 'POST',
@@ -248,7 +255,7 @@ async function uploadTranscriptAsFile(transcript, filename) {
       Authorization: `Bearer ${process.env.NOTION_TOKEN}`,
       'Notion-Version': NOTION_FILE_API_VERSION,
     },
-    body: JSON.stringify({ mode: 'single_part', filename, content_type: 'text/plain' }),
+    body: JSON.stringify({ mode: 'single_part', filename, content_type: 'text/plain;charset=utf-8' }),
   });
   if (!createRes.ok) {
     throw new Error(`file_upload 생성 실패: ${await createRes.text()}`);
@@ -256,7 +263,7 @@ async function uploadTranscriptAsFile(transcript, filename) {
   const created = await createRes.json();
 
   const form = new FormData();
-  form.append('file', new Blob([transcript], { type: 'text/plain' }), filename);
+  form.append('file', new Blob([UTF8_BOM + transcript], { type: 'text/plain;charset=utf-8' }), filename);
 
   const sendRes = await fetch(`https://api.notion.com/v1/file_uploads/${created.id}/send`, {
     method: 'POST',
