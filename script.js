@@ -1,4 +1,14 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // ===== AI 요약 → Notion 저장 설정 (Vercel 단일 배포 버전) =====
+    // 이 사이트와 /api/summarize가 같은 Vercel 프로젝트에서 함께 배포되므로,
+    // 별도 서버 주소 없이 상대경로만으로 호출합니다. 보통 이 값을 바꿀 필요는 없습니다.
+    const NOTION_WORKER_URL = '/api/summarize';
+
+    // (선택) Vercel 환경변수에 CLIENT_SECRET을 설정했다면, 여기에도 같은 값을 넣어주세요.
+    // 완전한 보안은 아니지만(클라이언트 코드는 누구나 볼 수 있음) 무단 호출을 줄여줍니다.
+    // 설정하지 않았다면 빈 문자열로 두세요.
+    const NOTION_CLIENT_SECRET = '';
+
     const userAgent = navigator.userAgent;
     const isEdge = userAgent.includes("Edg");
     const isChrome = userAgent.includes("Chrome") && !isEdge;
@@ -9,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const clearBtn = document.getElementById('clearBtn');
     const copyBtn = document.getElementById('copyBtn');
     const downloadBtn = document.getElementById('downloadBtn');
+    const notionBtn = document.getElementById('notionBtn');
     const transcriptArea = document.getElementById('transcript');
     const statusBadge = document.getElementById('statusBadge');
     const statusText = document.getElementById('statusText');
@@ -196,6 +207,50 @@ document.addEventListener('DOMContentLoaded', () => {
     downloadBtn.addEventListener('click', () => {
         if (!finalTranscript.trim()) return;
         executeDownload();
+    });
+
+    notionBtn.addEventListener('click', async () => {
+        if (!finalTranscript.trim()) {
+            alert('저장할 회의 내용이 없습니다. 먼저 녹음을 진행해주세요.');
+            return;
+        }
+        const originalText = notionBtn.innerText;
+        notionBtn.disabled = true;
+        notionBtn.innerText = '요약 중...';
+
+        try {
+            const headers = { 'Content-Type': 'application/json' };
+            if (NOTION_CLIENT_SECRET) headers['X-Client-Secret'] = NOTION_CLIENT_SECRET;
+
+            const res = await fetch(NOTION_WORKER_URL, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ transcript: finalTranscript }),
+            });
+
+            let data;
+            try {
+                data = await res.json();
+            } catch (parseErr) {
+                data = {};
+            }
+
+            if (!res.ok || data.error) {
+                throw new Error(data.error || `서버 오류 (${res.status})`);
+            }
+
+            notionBtn.innerText = '저장 완료!';
+            transcriptArea.value = `※ Notion에 저장되었습니다${data.title ? ` (제목: ${data.title})` : ''}.${data.url ? `\n${data.url}` : ''}\n\n` + transcriptArea.value;
+        } catch (e) {
+            console.error('Notion 저장 에러:', e);
+            notionBtn.innerText = '저장 실패';
+            transcriptArea.value = `※ AI 요약/Notion 저장에 실패했습니다. (${e.message})\n\n` + transcriptArea.value;
+        } finally {
+            setTimeout(() => {
+                notionBtn.innerText = originalText;
+                notionBtn.disabled = false;
+            }, 2500);
+        }
     });
 
     function executeDownload() {

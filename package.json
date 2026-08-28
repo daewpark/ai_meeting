@@ -1,0 +1,7 @@
+{
+  "name": "ai-meeting",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "회의록 앱 + AI 요약/Notion 저장용 Vercel Edge Function"
+}
