@@ -6,7 +6,8 @@
 // 주소의 API로 배포해줍니다. 정적 사이트(index.html/script.js)와 같은 프로젝트,
 // 같은 도메인에서 함께 배포되므로 Cloudflare 같은 별도 서비스가 필요 없습니다.
 //
-// 역할: 회의 스크립트를 받아서 → Claude로 요약(JSON) → Notion 페이지 생성 → 결과 반환.
+// 역할: 회의 스크립트를 받아서 → Claude로 요약(지정된 마크다운 리포트 형식) →
+//       그 리포트를 Notion 블록으로 변환해 페이지 생성 → 결과 반환.
 // API 키는 전부 Vercel 프로젝트의 환경변수(Settings → Environment Variables)에만
 // 저장되고, 브라우저(script.js)는 절대 이 키들을 알지 못합니다.
 //
@@ -27,7 +28,7 @@ function jsonResponse(obj, status) {
   });
 }
 
-// Notion의 rich_text 한 블록은 2000자 제한이 있어서, 긴 원문은 여러 조각으로 나눕니다.
+// Notion의 rich_text 한 조각은 2000자 제한이 있어서, 긴 텍스트는 여러 조각으로 나눕니다.
 function chunkText(text, size) {
   const chunks = [];
   for (let i = 0; i < text.length; i += size) {
@@ -36,11 +37,52 @@ function chunkText(text, size) {
   return chunks;
 }
 
+// Notion rich_text 하나. **굵게** 표시는 bold 어노테이션으로 변환하고,
+// 2000자 제한을 넘지 않도록 안전하게 자릅니다.
+function richTextRun(content, bold) {
+  const safeContent = content.length > 1900 ? content.slice(0, 1900) + '…' : content;
+  const run = { type: 'text', text: { content: safeContent } };
+  if (bold) run.annotations = { bold: true };
+  return run;
+}
+
+// 한 줄의 텍스트 안에서 **굵게** 마크다운만 최소한으로 해석해서 rich_text 배열로 변환합니다.
+function parseInlineRichText(text) {
+  const parts = [];
+  const regex = /\*\*(.+?)\*\*/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) parts.push(richTextRun(text.slice(lastIndex, match.index), false));
+    parts.push(richTextRun(match[1], true));
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) parts.push(richTextRun(text.slice(lastIndex), false));
+  if (parts.length === 0) parts.push(richTextRun('', false));
+  return parts;
+}
+
 function paragraphBlock(text) {
   return {
     object: 'block',
     type: 'paragraph',
     paragraph: { rich_text: [{ type: 'text', text: { content: text } }] },
+  };
+}
+
+function paragraphBlockRich(text) {
+  return {
+    object: 'block',
+    type: 'paragraph',
+    paragraph: { rich_text: parseInlineRichText(text) },
+  };
+}
+
+function heading1Block(text) {
+  return {
+    object: 'block',
+    type: 'heading_1',
+    heading_1: { rich_text: parseInlineRichText(text) },
   };
 }
 
@@ -52,20 +94,136 @@ function heading2Block(text) {
   };
 }
 
-function bulletBlock(text) {
+function heading3Block(text) {
   return {
     object: 'block',
-    type: 'bulleted_list_item',
-    bulleted_list_item: { rich_text: [{ type: 'text', text: { content: text } }] },
+    type: 'heading_3',
+    heading_3: { rich_text: parseInlineRichText(text) },
   };
 }
 
-function todoBlock(text) {
+function bulletBlockRich(text) {
   return {
     object: 'block',
-    type: 'to_do',
-    to_do: { rich_text: [{ type: 'text', text: { content: text } }], checked: false },
+    type: 'bulleted_list_item',
+    bulleted_list_item: { rich_text: parseInlineRichText(text) },
   };
+}
+
+// "| a | b |" 형태의 마크다운 표 줄들(구분선 "| :--- | :--- |" 제외)을 Notion table 블록으로 변환합니다.
+function buildTableBlock(lines) {
+  const dataLines = lines
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !/^\|[\s\-:|]+\|$/.test(l));
+
+  const rowsCells = dataLines.map((l) => {
+    let inner = l;
+    if (inner.startsWith('|')) inner = inner.slice(1);
+    if (inner.endsWith('|')) inner = inner.slice(0, -1);
+    return inner.split('|').map((c) => c.trim());
+  });
+
+  const width = rowsCells.reduce((max, r) => Math.max(max, r.length), 1);
+
+  const tableRows = rowsCells.map((cells) => {
+    const padded = cells.slice(0, width);
+    while (padded.length < width) padded.push('');
+    return {
+      object: 'block',
+      type: 'table_row',
+      table_row: { cells: padded.map((c) => parseInlineRichText(c)) },
+    };
+  });
+
+  return {
+    object: 'block',
+    type: 'table',
+    table: {
+      table_width: width,
+      has_column_header: true,
+      has_row_header: false,
+      children: tableRows,
+    },
+  };
+}
+
+// AI가 돌려준 마크다운 리포트를 Notion 블록 배열로 변환합니다.
+// (헤딩, **굵은 글씨** 섹션 제목, 불릿(1단계 중첩 포함), 표를 지원하고 그 외는 일반 문단으로 처리)
+function markdownToBlocks(markdown) {
+  // 혹시 모델이 코드블록으로 감싸서 응답한 경우를 방어적으로 제거합니다.
+  const cleaned = markdown.replace(/^```(?:markdown)?\s*\n?/, '').replace(/```\s*$/, '').trim();
+  const lines = cleaned.split('\n');
+  const blocks = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    if (trimmed === '') { i++; continue; }
+
+    if (trimmed === '---' || trimmed === '***') {
+      blocks.push({ object: 'block', type: 'divider', divider: {} });
+      i++; continue;
+    }
+
+    // "### 제목" 형태의 마크다운 헤딩
+    const hMatch = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (hMatch) {
+      blocks.push(hMatch[1].length === 1 ? heading1Block(hMatch[2]) : heading2Block(hMatch[2]));
+      i++; continue;
+    }
+
+    // "**1. 회의 개요**" 처럼 한 줄 전체가 굵게 표시된 섹션 제목
+    const boldHeaderMatch = trimmed.match(/^\*\*([^*]+)\*\*$/);
+    if (boldHeaderMatch) {
+      blocks.push(heading3Block(boldHeaderMatch[1]));
+      i++; continue;
+    }
+
+    // 마크다운 표 (Action Items 표 등)
+    if (trimmed.startsWith('|')) {
+      const tableLines = [];
+      while (i < lines.length && lines[i].trim().startsWith('|')) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      blocks.push(buildTableBlock(tableLines));
+      continue;
+    }
+
+    // 불릿 포인트. 들여쓰기가 4칸 이상이면 바로 위 불릿의 하위 항목으로 중첩합니다.
+    const bulletMatch = rawLine.match(/^(\s*)[*-]\s+(.+)$/);
+    if (bulletMatch) {
+      const indent = bulletMatch[1].length;
+      const content = bulletMatch[2].trim();
+      const block = bulletBlockRich(content);
+      const lastBlock = blocks[blocks.length - 1];
+      if (indent >= 4 && lastBlock && lastBlock.type === 'bulleted_list_item') {
+        lastBlock.bulleted_list_item.children = lastBlock.bulleted_list_item.children || [];
+        lastBlock.bulleted_list_item.children.push(block);
+      } else {
+        blocks.push(block);
+      }
+      i++; continue;
+    }
+
+    // 그 외는 일반 문단으로 처리
+    blocks.push(paragraphBlockRich(trimmed));
+    i++;
+  }
+
+  return blocks;
+}
+
+// 리포트의 "**주요 주제:** ..." 줄에서 Notion 페이지 제목으로 쓸 짧은 문구를 뽑아냅니다.
+function extractTitle(markdown) {
+  const m = markdown.match(/\*\*\s*주요\s*주제\s*:?\s*\*\*\s*(.+)/);
+  if (m) {
+    const t = m[1].trim();
+    if (t) return t.slice(0, 100);
+  }
+  return null;
 }
 
 // 파일 업로드 API는 2022-06-28보다 나중에 추가된 기능이라, 페이지/블록 생성과는
@@ -144,16 +302,40 @@ export default async function handler(request) {
     return jsonResponse({ error: 'NOTION_TOKEN 또는 NOTION_DATABASE_ID가 설정되지 않았습니다.' }, 500);
   }
 
-  // ---- 1) Claude로 요약 요청 (JSON 형식으로만 답하도록 지시) ----
-  const summaryPrompt = `다음은 회의를 음성인식으로 받아쓴 스크립트입니다. 오탈자나 띄어쓰기 오류가 있을 수 있으니 문맥으로 이해해서 요약하세요.
-반드시 아래 JSON 형식으로만 답하세요. 그 외 설명, 인사말, 코드블록 표시(\`\`\`) 등은 절대 포함하지 마세요.
+  // ---- 1) Claude로 요약 요청 (지정된 '회의 요약 리포트' 마크다운 형식으로만 답하도록 지시) ----
+  const summaryPrompt = `당신은 기업의 핵심 회의 내용을 완벽하게 정리하는 '수석 비서관 및 비즈니스 분석가'입니다.
+사용자가 Web Speech API 등을 통해 실시간 음성 인식(STT)으로 녹취된 회의록 원문을 제공하면, 이를 분석하여 명확하고 구조화된 형태의 결과물로 요약 및 정리해야 합니다.
 
-{
-  "title": "회의 제목 (핵심 주제 기반, 15자 내외)",
-  "summary": "회의 전체 내용을 2~3문장으로 요약",
-  "key_points": ["주요 논의사항 1", "주요 논의사항 2"],
-  "action_items": ["실행할 일 (담당자/기한이 언급됐다면 포함)"]
-}
+[핵심 지침]
+1. STT 오류 보정 및 문맥 추론: 입력된 텍스트는 음성 인식의 한계로 인해 오탈자, 띄어쓰기 오류, 문장 구조의 붕괴가 있을 수 있습니다. 문맥을 깊이 파악하여 발언자의 원래 의도에 맞게 문장을 교정하여 이해하세요.
+2. 핵심 용어 통일 (Inconsistency 해결): 고유명사, 프로젝트명, 전문 용어 등이 다르게 인식되었더라도(예: '제미나이', '재미나이', 'Gemini'), 문맥상 같은 의미라면 가장 정확하고 공식적인 단어로 통일하여 정리하세요.
+3. 핵심 내용 요약: 구어체, 중복되는 말, 불필요한 감탄사나 잡담은 제거하고, 회의의 주요 안건과 결정 사항을 중심적으로 요약하세요.
+4. Action Item 도출 (가장 중요): 회의 내용 중 누군가 실행해야 할 과제나 향후 계획이 언급되었다면 이를 반드시 포착하세요. 누가(Who), 무엇을(What), 언제까지(When) 해야 하는지 명확히 하여 별도의 섹션으로 분리해야 합니다.
+
+[출력 형식]
+결과물은 반드시 아래의 마크다운 형식만 그대로 사용해서 작성하세요. 괄호 안의 설명(예: "(안건이 여러 개일 경우 논리적으로 분류하여...)")은 작성 지침일 뿐이므로 실제 출력에는 절대 포함하지 마세요. 이 형식 이외의 인사말, 부연 설명, 코드블록 표시(\`\`\`) 등도 포함하지 마세요.
+
+### 📝 회의 요약 리포트
+
+**1. 회의 개요**
+*   **주요 주제:** (회의의 핵심 주제를 1줄로 작성)
+*   **회의 목적:** (이 회의를 진행한 주된 목적)
+
+**2. 주요 논의 사항**
+*   (주제 1)
+    *   세부 내용 및 결정 사항 요약
+*   (주제 2)
+    *   세부 내용 및 결정 사항 요약
+
+**3. 🚀 Action Items (실행 과제)**
+| 담당자 (Who) | 실행 과제 (What) | 기한 (When) | 비고 |
+| :--- | :--- | :--- | :--- |
+| 담당자명(또는 미정) | 명확한 행동 지시어 사용 | 날짜 또는 '미정' | 관련 참고 사항 |
+
+(표 형태로 깔끔하게 제공하며, 도출된 Action Item이 없다면 표 대신 "도출된 Action Item이 없습니다."라는 한 줄만 작성)
+
+**4. 용어 및 맥락 보정 노트 (선택 사항)**
+*   (STT 인식 오류가 심해 AI가 임의로 통일하거나 수정한 주요 키워드가 있다면 여기에 간략히 명시. 없다면 이 섹션 자체를 생략)
 
 회의 스크립트:
 """
@@ -169,7 +351,7 @@ ${transcript}
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 1024,
+      max_tokens: 2000,
       messages: [{ role: 'user', content: summaryPrompt }],
     }),
   });
@@ -180,40 +362,25 @@ ${transcript}
   }
 
   const claudeData = await claudeRes.json();
-  const rawText = (claudeData.content && claudeData.content[0] && claudeData.content[0].text) || '{}';
+  const rawText = ((claudeData.content && claudeData.content[0] && claudeData.content[0].text) || '').trim();
+  const reportMarkdown = rawText || '(AI 응답이 비어 있습니다.)';
+  const title = extractTitle(reportMarkdown) || '회의록 요약';
 
-  let parsed;
-  try {
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    parsed = JSON.parse(jsonMatch ? jsonMatch[0] : rawText);
-  } catch (e) {
-    // JSON 파싱에 실패해도 최소한 텍스트는 저장되도록 fallback 처리
-    parsed = { title: '회의록 요약', summary: rawText, key_points: [], action_items: [] };
-  }
-
-  const title = parsed.title || '회의록 요약';
-  const summary = parsed.summary || '';
-  const keyPoints = Array.isArray(parsed.key_points) ? parsed.key_points : [];
-  const actionItems = Array.isArray(parsed.action_items) ? parsed.action_items : [];
-
-  // ---- 2) Notion 페이지 생성 ----
+  // ---- 2) 리포트 마크다운 → Notion 블록 변환 ----
   const today = new Date().toISOString().slice(0, 10);
 
-  const children = [];
-  children.push(heading2Block('요약'));
-  children.push(paragraphBlock(summary || '(요약 없음)'));
-
-  if (keyPoints.length) {
-    children.push(heading2Block('주요 논의사항'));
-    keyPoints.forEach((p) => children.push(bulletBlock(p)));
+  let children;
+  try {
+    children = markdownToBlocks(reportMarkdown);
+    if (!children.length) throw new Error('빈 결과');
+  } catch (e) {
+    // 마크다운 → Notion 블록 변환에 실패해도 AI가 준 요약 내용 자체는 유실되지 않도록,
+    // 받은 텍스트를 그대로 문단으로 나눠서 저장합니다.
+    console.error('마크다운 변환 실패, 원문 텍스트로 대체합니다:', e);
+    children = chunkText(reportMarkdown, 1900).map((c) => paragraphBlock(c));
   }
 
-  if (actionItems.length) {
-    children.push(heading2Block('액션 아이템'));
-    actionItems.forEach((a) => children.push(todoBlock(a)));
-  }
-
-  // ---- 2-1) 원문은 텍스트 블록 대신 .txt 첨부파일로 붙입니다 ----
+  // ---- 2-1) 회의 원문(STT 스크립트)은 텍스트 블록 대신 .txt 첨부파일로 붙입니다 ----
   const hh = String(new Date().getHours()).padStart(2, '0');
   const min = String(new Date().getMinutes()).padStart(2, '0');
   const filename = `회의록_${today.replace(/-/g, '')}_${hh}${min}.txt`;
