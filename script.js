@@ -236,7 +236,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (!res.ok || data.error) {
-                throw new Error(data.error || `서버 오류 (${res.status})`);
+                // data.detail에는 Notion/Claude API가 실제로 돌려준 원인이 들어있어서,
+                // 화면에 함께 보여줘야 어디가 문제인지 바로 알 수 있습니다.
+                const detailText = data.detail ? ` — ${typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)}` : '';
+                throw new Error((data.error || `서버 오류 (${res.status})`) + detailText);
             }
 
             notionBtn.innerText = '저장 완료!';
@@ -244,7 +247,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             console.error('Notion 저장 에러:', e);
             notionBtn.innerText = '저장 실패';
-            transcriptArea.value = `※ AI 요약/Notion 저장에 실패했습니다. (${e.message})\n\n` + transcriptArea.value;
+            transcriptArea.value = `※ AI 요약/Notion 저장에 실패했습니다.\n${e.message}\n\n` + transcriptArea.value;
         } finally {
             setTimeout(() => {
                 notionBtn.innerText = originalText;
