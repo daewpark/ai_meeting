@@ -98,10 +98,15 @@ document.addEventListener('DOMContentLoaded', () => {
         isRecording = false; // 의도적 종료임을 명시
         recognition.stop();
         updateUIState(false);
-        extractKeywords(finalTranscript); 
-        
+        extractKeywords(finalTranscript);
+
         if (finalTranscript.trim() !== '') {
-            executeDownload();
+            // 녹음 중지와 동시에 AI 요약 → Notion 저장까지 자동으로 진행합니다.
+            // (원문은 Notion에 .txt 첨부파일로 저장되므로, 컴퓨터로의 별도 자동 다운로드는 하지 않습니다.
+            //  필요하면 "저장" 버튼으로 언제든 수동으로 로컬에 다운로드할 수 있습니다.)
+            // (silent: true → 내용이 비어있을 때 알림창을 띄우지 않고 조용히 건너뜁니다.
+            //  'not-allowed' 에러 처리 등에서 프로그램적으로 stopBtn.click()이 호출될 때를 대비한 안전장치입니다.)
+            saveToNotion({ silent: true });
         }
     });
 
@@ -209,11 +214,19 @@ document.addEventListener('DOMContentLoaded', () => {
         executeDownload();
     });
 
-    notionBtn.addEventListener('click', async () => {
+    notionBtn.addEventListener('click', () => saveToNotion({ silent: false }));
+
+    // AI 요약 → Notion 저장을 실제로 수행하는 함수.
+    // "AI 요약 → Notion" 버튼을 직접 눌렀을 때(silent: false)와, 녹음 중지 시 자동으로
+    // 호출될 때(silent: true) 양쪽에서 공통으로 사용합니다.
+    async function saveToNotion({ silent } = {}) {
         if (!finalTranscript.trim()) {
-            alert('저장할 회의 내용이 없습니다. 먼저 녹음을 진행해주세요.');
+            if (!silent) alert('저장할 회의 내용이 없습니다. 먼저 녹음을 진행해주세요.');
             return;
         }
+        // 이미 저장이 진행 중이면(예: 자동 저장 도중 버튼을 또 누른 경우) 중복 호출을 막습니다.
+        if (notionBtn.disabled) return;
+
         const originalText = notionBtn.innerText;
         notionBtn.disabled = true;
         notionBtn.innerText = '요약 중...';
@@ -254,7 +267,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 notionBtn.disabled = false;
             }, 2500);
         }
-    });
+    }
 
     function executeDownload() {
         const blob = new Blob([transcriptArea.value], { type: 'text/plain;charset=utf-8' });

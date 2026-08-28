@@ -68,6 +68,50 @@ function todoBlock(text) {
   };
 }
 
+// 파일 업로드 API는 2022-06-28보다 나중에 추가된 기능이라, 페이지/블록 생성과는
+// 별도의 최신 Notion-Version이 필요합니다. (페이지 생성 쪽은 이미 검증된 2022-06-28을 그대로 둡니다.)
+const NOTION_FILE_API_VERSION = '2026-03-11';
+
+// 회의 원문을 .txt 파일로 Notion에 직접 업로드하고, 그 파일을 가리키는 file 블록을 돌려줍니다.
+// 업로드가 조금이라도 실패하면 예외를 던지고, 호출한 쪽에서 텍스트 블록으로 대체합니다.
+async function uploadTranscriptAsFile(transcript, filename) {
+  const createRes = await fetch('https://api.notion.com/v1/file_uploads', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      Authorization: `Bearer ${process.env.NOTION_TOKEN}`,
+      'Notion-Version': NOTION_FILE_API_VERSION,
+    },
+    body: JSON.stringify({ mode: 'single_part', filename, content_type: 'text/plain' }),
+  });
+  if (!createRes.ok) {
+    throw new Error(`file_upload 생성 실패: ${await createRes.text()}`);
+  }
+  const created = await createRes.json();
+
+  const form = new FormData();
+  form.append('file', new Blob([transcript], { type: 'text/plain' }), filename);
+
+  const sendRes = await fetch(`https://api.notion.com/v1/file_uploads/${created.id}/send`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.NOTION_TOKEN}`,
+      'Notion-Version': NOTION_FILE_API_VERSION,
+      // Content-Type은 FormData를 body로 넘기면 boundary 포함해서 자동으로 설정되므로 직접 지정하지 않습니다.
+    },
+    body: form,
+  });
+  if (!sendRes.ok) {
+    throw new Error(`file_upload 전송 실패: ${await sendRes.text()}`);
+  }
+
+  return {
+    object: 'block',
+    type: 'file',
+    file: { type: 'file_upload', file_upload: { id: created.id } },
+  };
+}
+
 export default async function handler(request) {
   if (request.method !== 'POST') {
     return jsonResponse({ error: 'POST 요청만 지원합니다.' }, 405);
@@ -169,8 +213,22 @@ ${transcript}
     actionItems.forEach((a) => children.push(todoBlock(a)));
   }
 
-  children.push(heading2Block('원문 전체'));
-  chunkText(transcript, 1900).forEach((c) => children.push(paragraphBlock(c)));
+  // ---- 2-1) 원문은 텍스트 블록 대신 .txt 첨부파일로 붙입니다 ----
+  const hh = String(new Date().getHours()).padStart(2, '0');
+  const min = String(new Date().getMinutes()).padStart(2, '0');
+  const filename = `회의록_${today.replace(/-/g, '')}_${hh}${min}.txt`;
+
+  children.push(heading2Block('원문'));
+  try {
+    const fileBlock = await uploadTranscriptAsFile(transcript, filename);
+    children.push(fileBlock);
+  } catch (e) {
+    // 파일 업로드가 실패해도 회의록 저장 자체는 계속 진행합니다.
+    // 대신 원문을 텍스트로라도 남겨서 내용이 유실되지 않게 합니다.
+    console.error('파일 업로드 실패, 텍스트로 대체합니다:', e);
+    children.push(paragraphBlock('※ 원문 파일 첨부에 실패해 텍스트로 대신 표시합니다.'));
+    chunkText(transcript, 1900).forEach((c) => children.push(paragraphBlock(c)));
+  }
 
   // Notion 데이터베이스의 제목/날짜 속성 이름. 데이터베이스에서 이 이름과
   // 정확히 일치하는 속성을 만들어야 합니다 (SETUP_VERCEL.md 참고).
