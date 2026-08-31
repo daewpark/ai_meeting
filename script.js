@@ -231,6 +231,13 @@ document.addEventListener('DOMContentLoaded', () => {
         notionBtn.disabled = true;
         notionBtn.innerText = '요약 중...';
 
+        // 요청이 응답 없이 무한정 멈춰있는 것을 막기 위한 타임아웃(90초).
+        // 사이드바 화면이 백그라운드로 밀려나면 브라우저가 네트워크 요청을 일시정지시켜서
+        // 아무 성공/실패 메시지도 없이 그냥 멈춰버리는 경우가 있어, 최소한 이 시간이 지나면
+        // 확실한 실패 메시지를 보여주도록 합니다.
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 90000);
+
         try {
             const headers = { 'Content-Type': 'application/json' };
             if (NOTION_CLIENT_SECRET) headers['X-Client-Secret'] = NOTION_CLIENT_SECRET;
@@ -239,6 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ transcript: finalTranscript }),
+                signal: controller.signal,
             });
 
             let data;
@@ -260,8 +268,13 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             console.error('Notion 저장 에러:', e);
             notionBtn.innerText = '저장 실패';
-            transcriptArea.value = `※ AI 요약/Notion 저장에 실패했습니다.\n${e.message}\n\n` + transcriptArea.value;
+            const isTimeout = e.name === 'AbortError';
+            const message = isTimeout
+                ? '90초 넘게 응답이 없어 요청을 취소했습니다. 요약이 진행되는 동안에는 이 화면을 다른 창으로 전환하지 마시고, 다시 시도해주세요.'
+                : e.message;
+            transcriptArea.value = `※ AI 요약/Notion 저장에 실패했습니다.\n${message}\n\n` + transcriptArea.value;
         } finally {
+            clearTimeout(timeoutId);
             setTimeout(() => {
                 notionBtn.innerText = originalText;
                 notionBtn.disabled = false;
