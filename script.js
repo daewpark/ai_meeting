@@ -1,3 +1,12 @@
+// ===== 서비스 워커 등록 (PWA) =====
+// 페이지가 로드되면 바로 등록합니다. DOMContentLoaded를 기다릴 필요는 없습니다.
+// 이 서비스 워커는 정적 파일을 캐싱하지 않고, Background Sync(백그라운드 저장) 역할만 합니다.
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('service-worker.js').catch((e) => {
+        console.error('서비스 워커 등록 실패:', e);
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // ===== AI 요약 → Notion 저장 설정 (Vercel 단일 배포 버전) =====
     // 이 사이트와 /api/summarize가 같은 Vercel 프로젝트에서 함께 배포되므로,
@@ -8,6 +17,41 @@ document.addEventListener('DOMContentLoaded', () => {
     // 완전한 보안은 아니지만(클라이언트 코드는 누구나 볼 수 있음) 무단 호출을 줄여줍니다.
     // 설정하지 않았다면 빈 문자열로 두세요.
     const NOTION_CLIENT_SECRET = '';
+
+    // ===== 백그라운드 저장(Background Sync) 지원 여부 =====
+    // Chrome/Edge 등 크로미움 계열 브라우저는 서비스 워커의 Background Sync를 지원합니다.
+    // 이 기능이 있으면 "녹음 중지" 이후 다른 창/앱으로 전환해도 브라우저가 백그라운드에서
+    // 요약/저장 요청을 대신 처리해줍니다. 지원하지 않는 브라우저(Firefox, Safari 등)는
+    // 예전과 동일하게 이 화면에 머문 채로 직접 전송하는 방식(fallback)으로 자동 전환됩니다.
+    const supportsBackgroundSync = 'serviceWorker' in navigator && 'SyncManager' in window;
+
+    const SYNC_DB_NAME = 'meeting-minute-sync';
+    const SYNC_STORE_NAME = 'pending';
+    const SYNC_TAG = 'save-notion';
+
+    function openSyncDb() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open(SYNC_DB_NAME, 1);
+            req.onupgradeneeded = () => {
+                if (!req.result.objectStoreNames.contains(SYNC_STORE_NAME)) {
+                    req.result.createObjectStore(SYNC_STORE_NAME, { autoIncrement: true });
+                }
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+    }
+
+    // 저장할 회의록을 IndexedDB에 넣어둡니다. 실제 전송은 서비스 워커가 백그라운드에서 담당합니다.
+    async function addPendingSave(record) {
+        const db = await openSyncDb();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(SYNC_STORE_NAME, 'readwrite');
+            tx.objectStore(SYNC_STORE_NAME).add(record);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
+    }
 
     const userAgent = navigator.userAgent;
     const isEdge = userAgent.includes("Edg");
@@ -25,6 +69,32 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusText = document.getElementById('statusText');
     const keywordList = document.getElementById('keywordList');
     const langSelect = document.getElementById('langSelect'); // 언어 선택 가져오기
+
+    const NOTION_BTN_DEFAULT_TEXT = notionBtn.innerText; // 'AI 요약 → Notion'
+
+    // 서비스 워커가 백그라운드에서 저장을 끝낸 뒤 보내주는 완료/실패 메시지를 받아
+    // 화면(버튼 문구, 안내 텍스트)을 갱신합니다. 이 화면이 열려있을 때만 반영되며,
+    // 백그라운드 저장 자체는 이 화면이 닫혀있어도 이미 끝난 상태이므로 문제없습니다.
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.addEventListener('message', (event) => {
+            const msg = event.data || {};
+            if (msg.type === 'notion-save-success') {
+                notionBtn.innerText = '저장 완료!';
+                transcriptArea.value = `※ (백그라운드) Notion에 저장되었습니다${msg.title ? ` (제목: ${msg.title})` : ''}.${msg.url ? `\n${msg.url}` : ''}\n\n` + transcriptArea.value;
+                setTimeout(() => {
+                    notionBtn.innerText = NOTION_BTN_DEFAULT_TEXT;
+                    notionBtn.disabled = false;
+                }, 2500);
+            } else if (msg.type === 'notion-save-failed') {
+                notionBtn.innerText = '저장 실패';
+                transcriptArea.value = `※ (백그라운드) AI 요약/Notion 저장에 실패했습니다.\n${msg.message || ''}\n다시 시도해주세요.\n\n` + transcriptArea.value;
+                setTimeout(() => {
+                    notionBtn.innerText = NOTION_BTN_DEFAULT_TEXT;
+                    notionBtn.disabled = false;
+                }, 2500);
+            }
+        });
+    }
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition;
@@ -216,9 +286,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     notionBtn.addEventListener('click', () => saveToNotion({ silent: false }));
 
-    // AI 요약 → Notion 저장을 실제로 수행하는 함수.
+    // AI 요약 → Notion 저장을 시작하는 진입점.
     // "AI 요약 → Notion" 버튼을 직접 눌렀을 때(silent: false)와, 녹음 중지 시 자동으로
     // 호출될 때(silent: true) 양쪽에서 공통으로 사용합니다.
+    //
+    // Background Sync를 지원하는 브라우저(Edge/Chrome)에서는 서비스 워커에게 저장을 맡겨서
+    // 이 화면을 벗어나도 백그라운드에서 계속 처리되게 하고, 지원하지 않는 브라우저에서는
+    // 예전과 동일하게 이 화면에서 직접 전송합니다(90초 타임아웃 포함, fallback).
     async function saveToNotion({ silent } = {}) {
         if (!finalTranscript.trim()) {
             if (!silent) alert('저장할 회의 내용이 없습니다. 먼저 녹음을 진행해주세요.');
@@ -227,12 +301,46 @@ document.addEventListener('DOMContentLoaded', () => {
         // 이미 저장이 진행 중이면(예: 자동 저장 도중 버튼을 또 누른 경우) 중복 호출을 막습니다.
         if (notionBtn.disabled) return;
 
-        const originalText = notionBtn.innerText;
+        if (supportsBackgroundSync) {
+            try {
+                await queueBackgroundSave(finalTranscript);
+                return;
+            } catch (e) {
+                // IndexedDB 저장이나 sync 등록 자체가 실패한 드문 경우입니다.
+                // 이때는 지금까지처럼 이 화면에서 직접 전송하는 방식으로 대체합니다.
+                console.error('백그라운드 저장 등록 실패, 직접 전송으로 대체합니다:', e);
+            }
+        }
+
+        await saveToNotionDirect(finalTranscript);
+    }
+
+    // 회의록을 IndexedDB에 넣어두고 Background Sync를 등록합니다.
+    // 실제 전송은 서비스 워커(service-worker.js)가 담당하며, 완료/실패 결과는
+    // 위에서 등록한 'message' 리스너를 통해 비동기로 이 화면에 반영됩니다.
+    // (온라인 상태라면 보통 몇 초 안에 처리되지만, 정확한 타이밍은 브라우저가 결정합니다.)
+    async function queueBackgroundSave(transcript) {
+        notionBtn.disabled = true;
+        notionBtn.innerText = '요약 중... (백그라운드)';
+
+        const registration = await navigator.serviceWorker.ready;
+        await addPendingSave({
+            url: NOTION_WORKER_URL,
+            clientSecret: NOTION_CLIENT_SECRET,
+            transcript,
+        });
+        await registration.sync.register(SYNC_TAG);
+    }
+
+    // 화면에 머문 채로 직접 fetch로 전송하는 기존 방식.
+    // Background Sync 미지원 브라우저(Firefox, Safari 등)와, 위 큐 등록이 실패했을 때의
+    // fallback으로 사용됩니다.
+    async function saveToNotionDirect(transcript) {
         notionBtn.disabled = true;
         notionBtn.innerText = '요약 중...';
 
         // 요청이 응답 없이 무한정 멈춰있는 것을 막기 위한 타임아웃(90초).
-        // 사이드바 화면이 백그라운드로 밀려나면 브라우저가 네트워크 요청을 일시정지시켜서
+        // 화면이 백그라운드로 밀려나면 브라우저가 네트워크 요청을 일시정지시켜서
         // 아무 성공/실패 메시지도 없이 그냥 멈춰버리는 경우가 있어, 최소한 이 시간이 지나면
         // 확실한 실패 메시지를 보여주도록 합니다.
         const controller = new AbortController();
@@ -245,7 +353,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch(NOTION_WORKER_URL, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ transcript: finalTranscript }),
+                body: JSON.stringify({ transcript }),
                 signal: controller.signal,
             });
 
@@ -276,7 +384,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } finally {
             clearTimeout(timeoutId);
             setTimeout(() => {
-                notionBtn.innerText = originalText;
+                notionBtn.innerText = NOTION_BTN_DEFAULT_TEXT;
                 notionBtn.disabled = false;
             }, 2500);
         }
