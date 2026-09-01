@@ -85,6 +85,10 @@ async function handlePendingSaves() {
     let hadFailure = false;
 
     for (const { key, record } of items) {
+        // 실제 전송을 시작하기 직전에 페이지 쪽에 알려줍니다. script.js는 이 신호(또는 아래의
+        // 성공/실패 신호)를 정해진 시간 안에 받지 못하면 "Background Sync가 아예 동작하지
+        // 않는다"고 판단해 직접 전송 방식으로 전환하므로, 이 신호를 최대한 먼저 보내야 합니다.
+        await notifyClients({ type: 'notion-save-started' });
         try {
             const headers = { 'Content-Type': 'application/json' };
             if (record.clientSecret) headers['X-Client-Secret'] = record.clientSecret;
