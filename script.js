@@ -225,9 +225,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (event.error === 'network' || event.error === 'service-not-allowed') {
+            // "녹음 중지" 버튼을 눌러 recognition.stop()을 의도적으로 호출한 직후에는,
+            // 음성인식 엔진이 서버 연결을 정리하는 과정 자체의 부작용으로 이 network 에러가
+            // 발생하는 경우가 있습니다. 이 시점에는 isRecording이 이미 false로 바뀌어 있으므로
+            // (stopBtn 클릭 핸들러에서 recognition.stop()보다 먼저 false로 설정),
+            // 그때까지의 인식 결과에는 영향이 없는 종료 과정의 노이즈로 보고 조용히 무시합니다.
+            if (!isRecording) {
+                console.warn('녹음 종료 직후 발생한 network 에러 — 정상 종료 과정의 부작용으로 판단해 무시합니다.');
+                return;
+            }
+
+            // 여기 도달했다면 녹음이 진행 중인 상태에서 실제로 발생한 문제이므로 안내합니다.
             // Edge에서 마이크 권한은 정상인데도 음성인식 서버 연결이 막혀 발생하는 경우가 많습니다
-            // (사내망/프록시 환경, 또는 브라우저 자체 버그). 지금까지는 이 에러를 무시해서
-            // 화면은 "녹음 중"으로 보이지만 실제로는 아무것도 인식되지 않는 문제가 있었습니다.
+            // (사내망/프록시 환경, 또는 브라우저 자체 버그).
             isRecording = false;
             updateUIState(false);
             transcriptArea.value = `※ 음성인식 서버에 연결하지 못했습니다. (${event.error})\n마이크 권한은 정상이지만, 네트워크(사내망/프록시 등) 또는 브라우저 문제로 음성인식이 실패했을 수 있습니다.\n다른 네트워크에서 다시 시도하거나 잠시 후 다시 시도해주세요.\n\n` + transcriptArea.value;
