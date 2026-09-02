@@ -237,6 +237,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // 호출해줍니다. 즉 화면은 계속 "녹음 중"으로 유지되면서, 사용자가 직접
             // "녹음 중지"를 누르기 전까지는 자동으로 재연결을 시도합니다.
             console.warn(`음성인식 서버 연결이 일시적으로 끊겼습니다(${event.error}). onend에서 자동으로 재연결을 시도합니다.`);
+            // 그동안 화면이 계속 "녹음 중"으로만 보이면 재연결 중이라는 걸 알 수 없으므로,
+            // 상태 배지를 잠깐 "재연결 중"으로 바꿔서 최소한의 가시성을 줍니다. 재연결에
+            // 성공해서 recognition.onstart가 다시 불리면(updateUIState(true)) 자동으로
+            // "녹음 중"으로 돌아갑니다.
+            if (isRecording) {
+                showReconnectingUI();
+            }
             return;
         }
 
@@ -271,6 +278,10 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     function updateUIState(recording) {
+        // "재연결 중" 표시가 남아있지 않도록, 녹음 시작이 확정되거나(recording=true)
+        // 완전히 중지되거나(recording=false) 어느 쪽이든 여기서 정리합니다.
+        statusBadge.classList.remove('reconnecting');
+
         if (recording) {
             startBtn.classList.add('hidden');
             stopBtn.classList.remove('hidden');
@@ -283,6 +294,14 @@ document.addEventListener('DOMContentLoaded', () => {
             statusBadge.classList.remove('recording');
             statusText.innerText = '대기 중';
         }
+    }
+
+    // network 에러로 자동 재연결을 시도하는 동안 상태 배지에 표시하는 임시 상태.
+    // "녹음 중"(recording) 스타일과는 구분되는 amber 색으로 보여줍니다.
+    function showReconnectingUI() {
+        statusBadge.classList.remove('recording');
+        statusBadge.classList.add('reconnecting');
+        statusText.innerText = '재연결 중';
     }
 
     clearBtn.addEventListener('click', () => {

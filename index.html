@@ -13,6 +13,7 @@
             --primary: #cc785c;
             --primary-active: #a9583e;
             --primary-disabled: #e6dfd8;
+            --warn: #b58a2e;
             --canvas: #faf9f5;
             --surface-card: #efe9de;
             --surface-dark: #181715;
@@ -79,16 +80,32 @@
 
         .dot { width: 6px; height: 6px; border-radius: 50%; background-color: var(--muted); }
         .recording .dot { background-color: var(--primary); animation: pulse 1.5s infinite; }
-        .recording.status-badge { 
-            background-color: var(--canvas); 
-            border-color: var(--primary); 
-            color: var(--primary); 
+        .recording.status-badge {
+            background-color: var(--canvas);
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        /* 음성인식 서버 연결이 끊겨 자동으로 재연결을 시도하는 동안 표시하는 상태.
+           "녹음 중"과는 다른 색(amber)으로 구분해서, 지금 실제로 인식 중이 아니라
+           재연결 시도 중이라는 걸 눈치챌 수 있게 합니다. */
+        .reconnecting .dot { background-color: var(--warn); animation: pulse-warn 1.2s infinite; }
+        .reconnecting.status-badge {
+            background-color: var(--canvas);
+            border-color: var(--warn);
+            color: var(--warn);
         }
 
         @keyframes pulse {
             0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(204, 120, 92, 0.4); }
             70% { transform: scale(1); box-shadow: 0 0 0 4px rgba(204, 120, 92, 0); }
             100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(204, 120, 92, 0); }
+        }
+
+        @keyframes pulse-warn {
+            0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(181, 138, 46, 0.4); }
+            70% { transform: scale(1); box-shadow: 0 0 0 4px rgba(181, 138, 46, 0); }
+            100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(181, 138, 46, 0); }
         }
 
         main {
