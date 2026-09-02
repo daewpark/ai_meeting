@@ -225,22 +225,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (event.error === 'network' || event.error === 'service-not-allowed') {
-            // "녹음 중지" 버튼을 눌러 recognition.stop()을 의도적으로 호출한 직후에는,
-            // 음성인식 엔진이 서버 연결을 정리하는 과정 자체의 부작용으로 이 network 에러가
-            // 발생하는 경우가 있습니다. 이 시점에는 isRecording이 이미 false로 바뀌어 있으므로
-            // (stopBtn 클릭 핸들러에서 recognition.stop()보다 먼저 false로 설정),
-            // 그때까지의 인식 결과에는 영향이 없는 종료 과정의 노이즈로 보고 조용히 무시합니다.
-            if (!isRecording) {
-                console.warn('녹음 종료 직후 발생한 network 에러 — 정상 종료 과정의 부작용으로 판단해 무시합니다.');
-                return;
-            }
-
-            // 여기 도달했다면 녹음이 진행 중인 상태에서 실제로 발생한 문제이므로 안내합니다.
-            // Edge에서 마이크 권한은 정상인데도 음성인식 서버 연결이 막혀 발생하는 경우가 많습니다
-            // (사내망/프록시 환경, 또는 브라우저 자체 버그).
-            isRecording = false;
-            updateUIState(false);
-            transcriptArea.value = `※ 음성인식 서버에 연결하지 못했습니다. (${event.error})\n마이크 권한은 정상이지만, 네트워크(사내망/프록시 등) 또는 브라우저 문제로 음성인식이 실패했을 수 있습니다.\n다른 네트워크에서 다시 시도하거나 잠시 후 다시 시도해주세요.\n\n` + transcriptArea.value;
+            // 사내망/프록시 환경 등에서는 음성인식 서버와의 연결이 녹음 도중에도 종종
+            // 일시적으로 끊길 수 있습니다. 예전에는 이걸 치명적인 에러로 취급해서 녹음을
+            // 완전히 멈추고 경고 메시지를 띄웠는데, 그러면 사용자가 매번 직접 "녹음 시작"을
+            // 다시 눌러줘야 했습니다.
+            //
+            // 이제는 'no-speech'와 동일하게 취급합니다: isRecording을 건드리지 않고 그냥
+            // 무시합니다. 음성인식 엔진은 에러 후 내부적으로 세션을 종료하면서 곧이어
+            // onend를 발생시키는데, 이때 isRecording이 여전히 true(=사용자가 "녹음 중지"를
+            // 누르지 않은 상태)이면 onend 핸들러가 자동으로 recognition.start()를 다시
+            // 호출해줍니다. 즉 화면은 계속 "녹음 중"으로 유지되면서, 사용자가 직접
+            // "녹음 중지"를 누르기 전까지는 자동으로 재연결을 시도합니다.
+            console.warn(`음성인식 서버 연결이 일시적으로 끊겼습니다(${event.error}). onend에서 자동으로 재연결을 시도합니다.`);
             return;
         }
 
