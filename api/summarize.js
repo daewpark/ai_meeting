@@ -24,10 +24,10 @@
 // 전역으로 제공되므로, 아래 로직은 Edge일 때와 완전히 동일합니다 — 바뀐 건
 // export 방식(런타임에 함수를 등록하는 방법)뿐입니다.
 
-// 사용할 Claude 모델. 더 저렴하게 하려면 claude-haiku-4-5, 더 고품질을 원하면
-// claude-opus-4-8로 바꿀 수 있습니다.
+// 사용할 Claude 모델. 2026-09-02: 회의록 요약 비용/속도를 위해 Sonnet에서 Haiku로 변경.
+// 더 고품질을 원하면 claude-sonnet-4-6이나 claude-opus-4-8로 다시 바꿀 수 있습니다.
 // (최신 모델명은 https://platform.claude.com/docs/en/about-claude/models/overview 참고)
-const CLAUDE_MODEL = 'claude-sonnet-4-6';
+const CLAUDE_MODEL = 'claude-haiku-4-5';
 
 function jsonResponse(obj, status) {
   return new Response(JSON.stringify(obj), {
