@@ -300,10 +300,20 @@ async fetch(request) {
     }
   }
 
-  let transcript;
+  let transcript, meetingType, candidateName, positionName;
   try {
     const body = await request.json();
     transcript = (body.transcript || '').trim();
+    // 2026-09-04: "회의 구분"(업무회의/면접) 기능 추가. 프론트엔드가 값을 안 보내거나
+    // 알 수 없는 값을 보내면 기존과 동일하게 업무회의로 취급합니다(하위 호환).
+    meetingType = body.meetingType === 'interview' ? 'interview' : 'business';
+    candidateName = (body.candidateName || '').trim();
+    positionName = (body.positionName || '').trim();
+    if (meetingType === 'interview') {
+      // 팝업에서 필수값으로 받지만, 혹시 비어서 들어와도 리포트/파일명이 깨지지 않도록 기본값을 둡니다.
+      if (!candidateName) candidateName = '지원자';
+      if (!positionName) positionName = '포지션 미상';
+    }
   } catch (e) {
     return jsonResponse({ error: '요청 본문을 읽을 수 없습니다.' }, 400);
   }
@@ -318,8 +328,9 @@ async fetch(request) {
     return jsonResponse({ error: 'NOTION_TOKEN 또는 NOTION_DATABASE_ID가 설정되지 않았습니다.' }, 500);
   }
 
-  // ---- 1) Claude로 요약 요청 (지정된 '회의 요약 리포트' 마크다운 형식으로만 답하도록 지시) ----
-  const summaryPrompt = `당신은 기업의 핵심 회의 내용을 완벽하게 정리하는 '수석 비서관 및 비즈니스 분석가'입니다.
+  // ---- 1) Claude로 요약 요청 (지정된 마크다운 형식으로만 답하도록 지시) ----
+  // 2026-09-04: 회의 구분(업무회의/면접)에 따라 서로 다른 프롬프트를 사용합니다.
+  const businessPrompt = `당신은 기업의 핵심 회의 내용을 완벽하게 정리하는 '수석 비서관 및 비즈니스 분석가'입니다.
 사용자가 Web Speech API 등을 통해 실시간 음성 인식(STT)으로 녹취된 회의록 원문을 제공하면, 이를 분석하여 명확하고 구조화된 형태의 결과물로 요약 및 정리해야 합니다.
 
 [핵심 지침]
@@ -357,6 +368,62 @@ async fetch(request) {
 """
 ${transcript}
 """`;
+
+  // 면접용 프롬프트: 채용 여부에 대한 판단/추천 등급은 절대 포함하지 않고, 관찰된 사실만 구조화합니다.
+  const interviewPrompt = `당신은 채용 프로세스를 지원하는 '시니어 HR 담당자'입니다.
+사용자가 Web Speech API 등을 통해 실시간 음성 인식(STT)으로 녹취한 면접 내용을 제공하면,
+이를 분석하여 명확하고 구조화된 면접 기록으로 정리해야 합니다.
+
+[참고 정보]
+- 지원자: ${candidateName}
+- 지원 포지션: ${positionName}
+이 정보를 활용해 아래 형식의 "면접 개요"를 채우고, 답변 내용을 이 포지션의 직무 맥락에 맞게 해석하세요.
+
+[핵심 지침]
+1. STT 오류 보정 및 문맥 추론: 오탈자, 띄어쓰기 오류, 문장 구조 붕괴가 있을 수 있습니다. 문맥을 파악해 발언자 의도에 맞게 교정하세요.
+2. 핵심 용어 통일: 회사명, 기술 스택, 프로젝트명 등이 다르게 인식되었어도 문맥상 같은 의미면 가장 정확한 표현으로 통일하세요.
+3. 질의응답 재구성: 대화체 원문을 "질문 주제 → 지원자 답변 요약" 형태로 재구성하세요. 지원자가 실제 언급한 내용만 사용하고, 없는 내용을 추측해서 채우지 마세요.
+4. 사실 중심 서술: 강점/우려 사항은 반드시 면접 중 실제 발언이나 답변 태도에 근거해서만 작성하고, "합격/불합격", "강력 추천" 같은 채용 여부에 대한 판단이나 등급은 절대 포함하지 마세요. 관찰된 사실을 정리하는 것이 목적이며, 채용 의사결정은 사람이 합니다.
+5. Action Item 도출: 레퍼런스 체크, 추가 면접 일정, 확인이 필요한 사항 등 후속 조치가 언급되었다면 별도 섹션으로 분리하세요.
+
+[출력 형식]
+결과물은 반드시 아래 마크다운 형식만 그대로 사용하세요. 괄호 안 설명은 작성 지침일 뿐이므로 실제 출력에는 포함하지 마세요. 인사말, 부연 설명, 코드블록 표시(\`\`\`) 등도 포함하지 마세요.
+
+### 📝 면접 요약 리포트
+
+**1. 면접 개요**
+*   **지원자:** ${candidateName}
+*   **지원 포지션:** ${positionName}
+*   **면접 형태:** (스크립트에서 1차/2차, 실무진/임원 면접 등 파악 가능하면 기재, 아니면 "확인 안 됨")
+
+**2. 주요 질의응답 요약**
+*   (질문 주제 1)
+    *   지원자 답변 요약
+*   (질문 주제 2)
+    *   지원자 답변 요약
+
+**3. 관찰된 강점**
+*   (실제 답변에 근거한 강점만 기재)
+
+**4. 확인이 필요하거나 추가 확인이 요구되는 부분**
+*   (답변이 모호했거나 구체적 사례가 부족했던 부분 등, 중립적 서술로만 기재)
+
+**5. 🚀 Action Items (다음 단계)**
+| 담당자 (Who) | 실행 과제 (What) | 기한 (When) | 비고 |
+| :--- | :--- | :--- | :--- |
+| 담당자명(또는 미정) | 명확한 행동 지시어 사용 | 날짜 또는 '미정' | 관련 참고 사항 |
+
+(도출된 Action Item이 없다면 표 대신 "도출된 Action Item이 없습니다."라는 한 줄만 작성)
+
+**6. 용어 및 맥락 보정 노트 (선택 사항)**
+*   (STT 인식 오류가 심해 AI가 임의로 통일하거나 수정한 주요 키워드가 있다면 간략히 명시. 없다면 이 섹션 생략)
+
+면접 스크립트:
+"""
+${transcript}
+"""`;
+
+  const summaryPrompt = meetingType === 'interview' ? interviewPrompt : businessPrompt;
 
   const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -398,7 +465,12 @@ ${transcript}
 
   const rawText = ((claudeData.content && claudeData.content[0] && claudeData.content[0].text) || '').trim();
   const reportMarkdown = rawText || '(AI 응답이 비어 있습니다.)';
-  const title = extractTitle(reportMarkdown) || '회의록 요약';
+  // 면접은 이미 알고 있는 지원자/포지션으로 제목을 직접 구성합니다(AI 추출보다 안정적).
+  // 업무회의는 기존과 동일하게 리포트의 "주요 주제" 줄에서 뽑아냅니다.
+  const title =
+    meetingType === 'interview'
+      ? `면접 - ${candidateName} (${positionName})`.slice(0, 100)
+      : extractTitle(reportMarkdown) || '회의록 요약';
 
   // ---- 2) 리포트 마크다운 → Notion 블록 변환 ----
   const today = new Date().toISOString().slice(0, 10);
@@ -417,7 +489,12 @@ ${transcript}
   // ---- 2-1) 회의 원문(STT 스크립트)은 텍스트 블록 대신 .txt 첨부파일로 붙입니다 ----
   const hh = String(new Date().getHours()).padStart(2, '0');
   const min = String(new Date().getMinutes()).padStart(2, '0');
-  const filename = `회의록_${today.replace(/-/g, '')}_${hh}${min}.txt`;
+  // 파일명에 쓸 수 없는 문자(\ / : * ? " < > |)는 제거합니다.
+  const sanitizeForFilename = (s) => s.replace(/[\\/:*?"<>|]/g, '').trim();
+  const filename =
+    meetingType === 'interview'
+      ? `면접_${sanitizeForFilename(candidateName)}_${sanitizeForFilename(positionName)}_${today.replace(/-/g, '')}_${hh}${min}.txt`
+      : `회의록_${today.replace(/-/g, '')}_${hh}${min}.txt`;
 
   children.push(heading2Block('원문'));
   try {
@@ -431,10 +508,15 @@ ${transcript}
     chunkText(transcript, 1900).forEach((c) => children.push(paragraphBlock(c)));
   }
 
-  // Notion 데이터베이스의 제목/날짜 속성 이름. 데이터베이스에서 이 이름과
+  // Notion 데이터베이스의 제목/날짜/회의구분 속성 이름. 데이터베이스에서 이 이름과
   // 정확히 일치하는 속성을 만들어야 합니다 (SETUP_VERCEL.md 참고).
   const titleProp = process.env.NOTION_TITLE_PROPERTY || '이름';
   const dateProp = process.env.NOTION_DATE_PROPERTY || '날짜';
+  // 2026-09-04: "회의구분"(업무회의/면접) Select 속성 추가. 값(옵션)은 이 속성이 데이터베이스에
+  // 이미 있고 이 Notion 연동에 쓰기 권한이 있으면 Notion이 첫 저장 시 자동으로 만들어줍니다.
+  // 속성 자체(컬럼)는 자동으로 생기지 않으므로, 사용자가 Notion에서 미리 만들어둬야 합니다.
+  const meetingTypeProp = process.env.NOTION_MEETING_TYPE_PROPERTY || '회의구분';
+  const meetingTypeLabel = meetingType === 'interview' ? '면접' : '업무회의';
 
   const properties = {
     [titleProp]: { title: [{ text: { content: title } }] },
@@ -442,24 +524,42 @@ ${transcript}
   if (dateProp) {
     properties[dateProp] = { date: { start: today } };
   }
+  if (meetingTypeProp) {
+    properties[meetingTypeProp] = { select: { name: meetingTypeLabel } };
+  }
 
-  const notionRes = await fetch('https://api.notion.com/v1/pages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      Authorization: `Bearer ${process.env.NOTION_TOKEN}`,
-      'Notion-Version': '2022-06-28',
-    },
-    body: JSON.stringify({
-      parent: { database_id: process.env.NOTION_DATABASE_ID },
-      properties,
-      children,
-    }),
-  });
+  async function createNotionPage(props) {
+    return fetch('https://api.notion.com/v1/pages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Authorization: `Bearer ${process.env.NOTION_TOKEN}`,
+        'Notion-Version': '2022-06-28',
+      },
+      body: JSON.stringify({
+        parent: { database_id: process.env.NOTION_DATABASE_ID },
+        properties: props,
+        children,
+      }),
+    });
+  }
+
+  let notionRes = await createNotionPage(properties);
 
   if (!notionRes.ok) {
-    const errText = await notionRes.text();
-    return jsonResponse({ error: 'Notion 저장이 실패했습니다.', detail: errText }, 502);
+    let errText = await notionRes.text();
+    // 사용자가 아직 Notion 데이터베이스에 "회의구분" 컬럼을 만들지 않은 환경 대비:
+    // 그 속성 때문에 실패한 경우로 보이면, 이 값만 빼고 한 번 더 시도해서 저장 자체는 계속되게 합니다.
+    if (properties[meetingTypeProp] && /is not a property that exists/i.test(errText)) {
+      console.warn(`Notion 데이터베이스에 "${meetingTypeProp}" 속성이 없어 이 값 없이 재시도합니다:`, errText);
+      const fallbackProps = { ...properties };
+      delete fallbackProps[meetingTypeProp];
+      notionRes = await createNotionPage(fallbackProps);
+    }
+    if (!notionRes.ok) {
+      errText = await notionRes.text();
+      return jsonResponse({ error: 'Notion 저장이 실패했습니다.', detail: errText }, 502);
+    }
   }
 
   const notionData = await notionRes.json();

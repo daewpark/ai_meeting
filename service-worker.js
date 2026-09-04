@@ -93,10 +93,18 @@ async function handlePendingSaves() {
             const headers = { 'Content-Type': 'application/json' };
             if (record.clientSecret) headers['X-Client-Secret'] = record.clientSecret;
 
+            // 2026-09-04: 회의 구분(업무회의/면접) 및 면접 정보(지원자명/포지션)도 함께 전송합니다.
+            // script.js가 IndexedDB에 넣어둘 때 record에 meetingType/candidateName/positionName을
+            // 함께 저장해두므로, 있으면 그대로 실어 보냅니다(없으면 undefined라 그냥 생략됨).
             const res = await fetch(record.url, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ transcript: record.transcript }),
+                body: JSON.stringify({
+                    transcript: record.transcript,
+                    meetingType: record.meetingType,
+                    candidateName: record.candidateName,
+                    positionName: record.positionName,
+                }),
             });
 
             let data = {};

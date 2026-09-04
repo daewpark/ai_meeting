@@ -83,6 +83,81 @@ document.addEventListener('DOMContentLoaded', () => {
     const keywordList = document.getElementById('keywordList');
     const langSelect = document.getElementById('langSelect'); // 언어 선택 가져오기
 
+    // ===== 회의 구분(업무회의/면접) =====
+    // 2026-09-04: "면접" 요약을 위한 지원자명/포지션 입력 및 회의 구분 상태 관리.
+    const meetingTypeSelect = document.getElementById('meetingTypeSelect');
+    const interviewBadge = document.getElementById('interviewBadge');
+    const interviewBadgeText = document.getElementById('interviewBadgeText');
+    const interviewEditBtn = document.getElementById('interviewEditBtn');
+    const interviewModal = document.getElementById('interviewModal');
+    const interviewCandidateInput = document.getElementById('interviewCandidateInput');
+    const interviewPositionInput = document.getElementById('interviewPositionInput');
+    const interviewCancelBtn = document.getElementById('interviewCancelBtn');
+    const interviewConfirmBtn = document.getElementById('interviewConfirmBtn');
+
+    let meetingType = 'business'; // 'business' | 'interview'
+    let candidateName = '';
+    let positionName = '';
+
+    function updateInterviewBadge() {
+        if (meetingType === 'interview' && candidateName && positionName) {
+            interviewBadgeText.textContent = `면접: ${candidateName} (${positionName})`;
+            interviewBadge.classList.remove('hidden');
+        } else {
+            interviewBadge.classList.add('hidden');
+        }
+    }
+
+    function openInterviewModal() {
+        interviewCandidateInput.value = candidateName;
+        interviewPositionInput.value = positionName;
+        interviewModal.classList.remove('hidden');
+        interviewCandidateInput.focus();
+    }
+
+    function closeInterviewModal() {
+        interviewModal.classList.add('hidden');
+    }
+
+    // "면접"을 선택하면 지원자명/포지션 입력 팝업을 띄웁니다.
+    meetingTypeSelect.addEventListener('change', () => {
+        if (meetingTypeSelect.value === 'interview') {
+            openInterviewModal();
+        } else {
+            meetingType = 'business';
+            updateInterviewBadge();
+        }
+    });
+
+    // 이미 입력된 면접 정보를 수정할 때(다른 지원자/포지션으로 바꾸고 싶을 때) 사용합니다.
+    interviewEditBtn.addEventListener('click', () => openInterviewModal());
+
+    interviewCancelBtn.addEventListener('click', () => {
+        closeInterviewModal();
+        // 아직 한 번도 확정된 적이 없다면(면접 정보를 입력한 적이 없다면) 업무회의로 되돌립니다.
+        if (!candidateName || !positionName) {
+            meetingType = 'business';
+            meetingTypeSelect.value = 'business';
+        } else {
+            meetingTypeSelect.value = 'interview';
+        }
+    });
+
+    interviewConfirmBtn.addEventListener('click', () => {
+        const name = interviewCandidateInput.value.trim();
+        const position = interviewPositionInput.value.trim();
+        if (!name || !position) {
+            alert('지원자명과 지원 포지션을 모두 입력해주세요.');
+            return;
+        }
+        candidateName = name;
+        positionName = position;
+        meetingType = 'interview';
+        meetingTypeSelect.value = 'interview';
+        updateInterviewBadge();
+        closeInterviewModal();
+    });
+
     const NOTION_BTN_DEFAULT_TEXT = notionBtn.innerText; // 'AI 요약 → Notion'
 
     // 서비스 워커가 백그라운드에서 저장을 끝낸 뒤 보내주는 완료/실패 메시지를 받아
@@ -370,13 +445,28 @@ document.addEventListener('DOMContentLoaded', () => {
         // 이미 저장이 진행 중이면(예: 자동 저장 도중 버튼을 또 누른 경우) 중복 호출을 막습니다.
         if (notionBtn.disabled) return;
 
+        // 면접인데 아직 지원자명/포지션을 확정하지 않은 상태(팝업을 취소한 경우 등)라면
+        // 저장 전에 다시 입력받습니다. (silent 저장에서는 alert 대신 그냥 팝업만 띄우고 중단)
+        if (meetingTypeSelect.value === 'interview' && (!candidateName || !positionName)) {
+            if (!silent) alert('면접 정보(지원자명/포지션)를 먼저 입력해주세요.');
+            openInterviewModal();
+            return;
+        }
+
+        // 요청 본문에 공통으로 실어 보낼 회의 구분 정보.
+        const meetingInfo = { meetingType };
+        if (meetingType === 'interview') {
+            meetingInfo.candidateName = candidateName;
+            meetingInfo.positionName = positionName;
+        }
+
         if (supportsBackgroundSync) {
             let pendingKey = null;
             try {
                 notionBtn.disabled = true;
                 notionBtn.innerText = '요약 중... (백그라운드)';
 
-                pendingKey = await queueBackgroundSave(finalTranscript);
+                pendingKey = await queueBackgroundSave(finalTranscript, meetingInfo);
 
                 const started = await waitForBackgroundStart(BACKGROUND_SYNC_START_TIMEOUT_MS);
                 if (started) return; // 이후 완료/실패는 위에서 등록한 전역 'message' 리스너가 화면에 반영합니다.
@@ -390,19 +480,20 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        await saveToNotionDirect(finalTranscript);
+        await saveToNotionDirect(finalTranscript, meetingInfo);
     }
 
     // 회의록을 IndexedDB에 넣어두고 Background Sync를 등록합니다. 생성된 키를 돌려줘서,
     // 나중에 타임아웃으로 포기해야 할 경우 이 항목을 지울 수 있게 합니다.
     // 실제 전송은 서비스 워커(service-worker.js)가 담당하며, 완료/실패 결과는
     // 위에서 등록한 'message' 리스너를 통해 비동기로 이 화면에 반영됩니다.
-    async function queueBackgroundSave(transcript) {
+    async function queueBackgroundSave(transcript, meetingInfo) {
         const registration = await navigator.serviceWorker.ready;
         const key = await addPendingSave({
             url: NOTION_WORKER_URL,
             clientSecret: NOTION_CLIENT_SECRET,
             transcript,
+            ...meetingInfo,
         });
         await registration.sync.register(SYNC_TAG);
         return key;
@@ -411,7 +502,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 화면에 머문 채로 직접 fetch로 전송하는 기존 방식.
     // Background Sync 미지원 브라우저(Firefox, Safari 등)와, 위 큐 등록이 실패했을 때의
     // fallback으로 사용됩니다.
-    async function saveToNotionDirect(transcript) {
+    async function saveToNotionDirect(transcript, meetingInfo) {
         notionBtn.disabled = true;
         notionBtn.innerText = '요약 중...';
 
@@ -429,7 +520,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch(NOTION_WORKER_URL, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ transcript }),
+                body: JSON.stringify({ transcript, ...meetingInfo }),
                 signal: controller.signal,
             });
 
@@ -470,16 +561,23 @@ document.addEventListener('DOMContentLoaded', () => {
         const blob = new Blob([transcriptArea.value], { type: 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        
+
         const date = new Date();
         const yyyy = date.getFullYear();
         const mm = String(date.getMonth() + 1).padStart(2, '0');
         const dd = String(date.getDate()).padStart(2, '0');
         const hh = String(date.getHours()).padStart(2, '0');
         const min = String(date.getMinutes()).padStart(2, '0');
-        
+
+        // 파일명에 쓸 수 없는 문자는 제거합니다.
+        const sanitizeForFilename = (s) => s.replace(/[\\/:*?"<>|]/g, '').trim();
+        const filename =
+            meetingType === 'interview' && candidateName && positionName
+                ? `면접_${sanitizeForFilename(candidateName)}_${sanitizeForFilename(positionName)}_${yyyy}${mm}${dd}_${hh}${min}.txt`
+                : `회의록_${yyyy}${mm}${dd}_${hh}${min}.txt`;
+
         a.href = url;
-        a.download = `회의록_${yyyy}${mm}${dd}_${hh}${min}.txt`;
+        a.download = filename;
         a.click();
         URL.revokeObjectURL(url);
     }

@@ -121,7 +121,9 @@
             overflow-y: auto;
         }
 
-        .controls { display: flex; gap: var(--space-sm); }
+        /* flex-wrap: 좁은 사이드바 폭에서 회의 구분 배지 등이 추가되어도 버튼이 화면 밖으로
+           밀려나지 않고 다음 줄로 자연스럽게 넘어가도록 합니다. */
+        .controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; }
         
         /* 언어 선택 드롭다운 스타일 */
         .lang-select {
@@ -154,6 +156,7 @@
             align-items: center;
             justify-content: center;
             gap: 6px;
+            white-space: nowrap;
         }
 
         .btn-primary { background-color: var(--primary); color: var(--on-primary); }
@@ -239,6 +242,97 @@
         }
         
         .empty-text { color: var(--muted); font-size: 13px; margin: auto; }
+
+        /* ===== 회의 구분(업무회의/면접) 선택 시 면접 정보 배지 ===== */
+        .interview-badge {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background-color: var(--surface-card);
+            border: 1px solid var(--hairline);
+            color: var(--ink);
+            padding: 0 12px;
+            height: 40px;
+            border-radius: var(--radius-md);
+            font-size: 13px;
+            font-weight: 500;
+            max-width: 100%;
+        }
+        /* 지원자명/포지션이 길어져도 배지가 줄바꿈 대상 버튼들을 밀어내지 않도록,
+           텍스트 부분만 말줄임표로 축약합니다. */
+        .interview-badge span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+        }
+        .interview-badge button {
+            flex: 0 0 auto;
+            height: auto;
+            padding: 2px 8px;
+            font-size: 12px;
+            background-color: var(--canvas);
+            border: 1px solid var(--hairline);
+            color: var(--ink);
+            border-radius: var(--radius-sm);
+        }
+        .interview-badge button:hover { background-color: var(--surface-dark); color: var(--on-dark); }
+
+        /* ===== 면접 정보(지원자명/포지션) 입력 팝업 ===== */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background-color: rgba(20, 20, 19, 0.45);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+        .modal-card {
+            background-color: var(--canvas);
+            border: 1px solid var(--hairline);
+            border-radius: var(--radius-lg);
+            padding: var(--space-lg);
+            width: 320px;
+            max-width: calc(100vw - 48px);
+            box-shadow: 0 12px 32px rgba(20, 20, 19, 0.18);
+        }
+        .modal-card h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .modal-card p.modal-desc {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: var(--space-md);
+        }
+        .modal-field { margin-bottom: var(--space-sm); }
+        .modal-field label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 4px;
+            color: var(--ink);
+        }
+        .modal-field input {
+            width: 100%;
+            height: 40px;
+            padding: 0 12px;
+            border: 1px solid var(--hairline);
+            border-radius: var(--radius-md);
+            font-family: var(--font-sans);
+            font-size: 14px;
+            color: var(--ink);
+            background-color: var(--surface-card);
+            outline: none;
+        }
+        .modal-field input:focus { border-color: var(--primary); }
+        .modal-actions {
+            display: flex;
+            gap: var(--space-sm);
+            margin-top: var(--space-md);
+        }
     </style>
 </head>
 <body>
@@ -275,12 +369,22 @@
 
     <main>
         <div class="controls">
-            <!-- 언어 선택 드롭다운 추가 -->
+            <!-- 언어 선택 드롭다운 -->
             <select id="langSelect" class="lang-select">
                 <option value="ko-KR">🇰🇷 한국어</option>
                 <option value="en-US">🇺🇸 English</option>
                 <option value="zh-CN">🇨🇳 中文</option>
             </select>
+            <!-- 회의 구분(업무회의/면접) 선택. "면접"을 고르면 지원자명/포지션 입력 팝업이 뜹니다. -->
+            <select id="meetingTypeSelect" class="lang-select">
+                <option value="business" selected>📋 업무회의</option>
+                <option value="interview">🎙️ 면접</option>
+            </select>
+            <!-- 면접 정보가 입력되면 여기에 배지로 표시되고, "수정"으로 다시 팝업을 열 수 있습니다. -->
+            <div id="interviewBadge" class="interview-badge hidden">
+                <span id="interviewBadgeText"></span>
+                <button id="interviewEditBtn" type="button">수정</button>
+            </div>
             <button id="startBtn" class="btn-primary">녹음 시작</button>
             <button id="stopBtn" class="btn-dark hidden">녹음 중지</button>
             <button id="clearBtn" class="btn-secondary">초기화</button>
@@ -301,6 +405,26 @@
             </div>
         </div>
     </main>
+
+    <!-- 면접 정보(지원자명/포지션) 입력 팝업. 회의 구분에서 "면접"을 선택하면 표시됩니다. -->
+    <div id="interviewModal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <h2>면접 정보 입력</h2>
+            <p class="modal-desc">AI 요약과 Notion 제목·파일명에 사용됩니다.</p>
+            <div class="modal-field">
+                <label for="interviewCandidateInput">지원자명</label>
+                <input type="text" id="interviewCandidateInput" placeholder="예: 홍길동">
+            </div>
+            <div class="modal-field">
+                <label for="interviewPositionInput">지원 포지션</label>
+                <input type="text" id="interviewPositionInput" placeholder="예: 백엔드 개발자">
+            </div>
+            <div class="modal-actions">
+                <button id="interviewCancelBtn" type="button" class="btn-secondary">취소</button>
+                <button id="interviewConfirmBtn" type="button" class="btn-primary">확인</button>
+            </div>
+        </div>
+    </div>
 
     <script src="script.js"></script>
 </body>
