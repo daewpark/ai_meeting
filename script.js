@@ -373,8 +373,21 @@ document.addEventListener('DOMContentLoaded', () => {
     recognition.onend = () => {
         if (isRecording) {
             // 녹음 중(isRecording=true)인데 끊겼다면 자동 재시작 (언어 변경 시에도 이 로직이 활용됨)
+            //
+            // 2026-09-04: 여기서 recognition.start()를 곧바로(그것도 bare try/catch로 에러를
+            // 무시하며) 호출하면, 방금 끝난 세션이 브라우저 내부적으로 완전히 정리되기 전에
+            // 다시 시작을 시도해 InvalidStateError가 날 수 있습니다(수동 "녹음 시작" 버튼에서
+            // 22번으로 고친 것과 동일한 종류의 레이스 컨디션). 문제는 이 에러가 catch(e) {}로
+            // 조용히 삼켜진다는 점입니다 — 재시도도 없고, 사용자에게 알림도 없고, isRecording은
+            // true로 남아있지만 실제로는 인식 엔진이 완전히 죽어버려서 아무 이벤트도 더 이상
+            // 발생하지 않습니다. 화면은 직전 상태("녹음 중" 또는 network 에러로 인한
+            // "재연결 중")에 멈춘 채로 남고, 사용자 입장에서는 "녹음이 중간에 끊기고
+            // 재시도해도 재개되지 않는" 것처럼 보이게 됩니다.
+            // 이제는 수동 시작과 동일하게 startRecognitionWithRetry()를 재사용합니다: 300ms
+            // 간격으로 최대 5회 재시도하고, 그래도 계속 실패하면 isRecording=false로 정리하고
+            // "재연결 중" 표시도 지운 뒤 사용자에게 에러 메시지를 보여줍니다.
             setTimeout(() => {
-                try { recognition.start(); } catch(e) {}
+                startRecognitionWithRetry();
             }, 100);
         } else {
             // 사용자가 중지 버튼을 눌러서 끊긴 경우 UI 업데이트
