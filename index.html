@@ -322,7 +322,11 @@
             border: 1px solid var(--hairline);
             border-radius: var(--radius-md);
             font-family: var(--font-sans);
-            font-size: 14px;
+            /* 2026-09-04: 모바일(PWA)에서 이 입력창을 탭하면 iOS Safari가 자동으로
+               화면을 확대하는 현상이 있었습니다. iOS는 포커스된 입력 요소의 글자 크기가
+               16px보다 작으면 텍스트가 안 보일까봐 자동으로 화면을 확대하는데, 이 값이
+               14px였던 게 원인입니다. 16px로 올려 자동 확대를 방지합니다. */
+            font-size: 16px;
             color: var(--ink);
             background-color: var(--surface-card);
             outline: none;
