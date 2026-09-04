@@ -100,8 +100,10 @@ document.addEventListener('DOMContentLoaded', () => {
     let positionName = '';
 
     function updateInterviewBadge() {
+        // 2026-09-04: 포지션명이 길면 컨트롤 줄 레이아웃이 깨진다는 피드백을 받아,
+        // 배지에는 지원자명만 짧게 표시합니다(포지션은 요약/제목/파일명에는 그대로 쓰입니다).
         if (meetingType === 'interview' && candidateName && positionName) {
-            interviewBadgeText.textContent = `면접: ${candidateName} (${positionName})`;
+            interviewBadgeText.textContent = `면접: ${candidateName}`;
             interviewBadge.classList.remove('hidden');
         } else {
             interviewBadge.classList.add('hidden');
