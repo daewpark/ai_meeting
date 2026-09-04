@@ -288,41 +288,44 @@
             justify-content: center;
             z-index: 100;
         }
+        /* 2026-09-04: 팝업 전체 크기를 기존 대비 80% 수준으로 축소(요청 반영).
+           var(--space-*) 대신 고정 px 값을 써서, 이 값을 공유하는 다른 요소(헤더/본문 여백 등)에는
+           영향이 가지 않게 했습니다. */
         .modal-card {
             background-color: var(--canvas);
             border: 1px solid var(--hairline);
-            border-radius: var(--radius-lg);
-            padding: var(--space-lg);
-            width: 320px;
-            max-width: calc(100vw - 48px);
-            box-shadow: 0 12px 32px rgba(20, 20, 19, 0.18);
+            border-radius: 10px;
+            padding: 19px;
+            width: 256px;
+            max-width: calc(100vw - 38px);
+            box-shadow: 0 10px 26px rgba(20, 20, 19, 0.18);
         }
         .modal-card h2 {
-            font-size: 16px;
+            font-size: 13px;
             font-weight: 600;
-            margin-bottom: 4px;
+            margin-bottom: 3px;
         }
         .modal-card p.modal-desc {
-            font-size: 13px;
+            font-size: 10px;
             color: var(--muted);
-            margin-bottom: var(--space-md);
+            margin-bottom: 13px;
         }
-        .modal-field { margin-bottom: var(--space-sm); }
+        .modal-field { margin-bottom: 10px; }
         .modal-field label {
             display: block;
-            font-size: 13px;
+            font-size: 10px;
             font-weight: 500;
-            margin-bottom: 4px;
+            margin-bottom: 3px;
             color: var(--ink);
         }
         .modal-field input {
             width: 100%;
-            height: 40px;
-            padding: 0 12px;
+            height: 32px;
+            padding: 0 10px;
             border: 1px solid var(--hairline);
             border-radius: var(--radius-md);
             font-family: var(--font-sans);
-            font-size: 14px;
+            font-size: 11px;
             color: var(--ink);
             background-color: var(--surface-card);
             outline: none;
@@ -330,8 +333,14 @@
         .modal-field input:focus { border-color: var(--primary); }
         .modal-actions {
             display: flex;
-            gap: var(--space-sm);
-            margin-top: var(--space-md);
+            gap: 10px;
+            margin-top: 13px;
+        }
+        /* 버튼도 팝업 안에서는 같은 비율로 축소합니다(사이트 전역 버튼 크기는 그대로 유지). */
+        .modal-actions button {
+            height: 32px;
+            padding: 8px 11px;
+            font-size: 11px;
         }
     </style>
 </head>
