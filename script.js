@@ -218,7 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
             stream.getTracks().forEach(track => track.stop());
 
             isRecording = true;
-            recognition.start();
+            startRecognitionWithRetry();
             // "녹음 중" UI 전환은 실제로 인식이 시작된 뒤(recognition.onstart)에 처리합니다.
         } catch (e) {
             console.error("녹음 시작 에러:", e);
@@ -226,8 +226,6 @@ document.addEventListener('DOMContentLoaded', () => {
             updateUIState(false);
 
             // getUserMedia가 거부된 경우에만 마이크 "권한" 문제입니다.
-            // recognition.start()에서 던진 다른 종류의 에러(예: InvalidStateError)를
-            // 권한 문제로 오인해 안내하지 않도록 구분합니다.
             const isPermissionError = e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError';
 
             if (isPermissionError) {
@@ -248,11 +246,41 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             } else {
-                // 권한은 정상인데 다른 이유(예: 인식기 상태 오류)로 시작 자체가 실패한 경우
+                // 권한은 정상인데 다른 이유로 마이크 접근 자체가 실패한 경우 (예: getUserMedia의
+                // AbortError 등 — recognition.start()의 InvalidStateError는 이제 이 catch에
+                // 도달하지 않고 startRecognitionWithRetry()에서 자동 재시도로 처리됩니다).
                 transcriptArea.value = `※ 녹음을 시작하지 못했습니다. (${e.name || 'Error'}${e.message ? ': ' + e.message : ''})\n마이크 권한은 정상이지만 다른 문제로 시작이 실패했습니다. 잠시 후 다시 시도해주세요.\n\n` + transcriptArea.value;
             }
         }
     });
+
+    // 2026-09-04: "녹음 중지"를 누른 직후 곧바로 "녹음 시작"을 다시 누르면
+    // "InvalidStateError: recognition has already started" 에러로 시작이 실패하는 문제가
+    // 있었습니다(사용자 실사용 중 재현). 원인은 recognition.stop()이 즉시 끝나지 않고
+    // 비동기로 처리되기 때문입니다 — 이전 세션이 완전히 정리되었다는 확정 신호는 onend
+    // 이벤트인데, 그 전에 recognition.start()를 호출하면 엔진이 "아직 이전 세션이 진행
+    // 중"이라고 판단해 이 에러를 던집니다. 예전에는 이 에러를 바로 화면에 표시하고 끝냈는데,
+    // 그러면 사용자가 다시 "녹음 시작"을 눌러야 했고, 너무 빨리 다시 누르면 같은 에러가
+    // 반복 표시될 수 있었습니다.
+    // 이제는 이 특정 에러(InvalidStateError)에 한해 짧은 대기 후 자동으로 재시도합니다.
+    // 보통 이전 세션은 수백 ms 안에 정리되므로, 300ms 간격으로 최대 5회(최대 1.5초) 재시도한
+    // 뒤에도 실패하면 그때 사용자에게 에러 메시지를 보여줍니다.
+    function startRecognitionWithRetry(retriesLeft = 5) {
+        try {
+            recognition.start();
+        } catch (e) {
+            if (e.name === 'InvalidStateError' && retriesLeft > 0) {
+                console.warn(`음성인식 엔진이 이전 세션을 정리 중입니다. 잠시 후 재시도합니다... (남은 시도: ${retriesLeft})`);
+                setTimeout(() => startRecognitionWithRetry(retriesLeft - 1), 300);
+                return;
+            }
+
+            console.error("녹음 시작 에러:", e);
+            isRecording = false;
+            updateUIState(false);
+            transcriptArea.value = `※ 녹음을 시작하지 못했습니다. (${e.name || 'Error'}${e.message ? ': ' + e.message : ''})\n마이크 권한은 정상이지만 다른 문제로 시작이 실패했습니다. 잠시 후 다시 시도해주세요.\n\n` + transcriptArea.value;
+        }
+    }
 
     stopBtn.addEventListener('click', () => {
         isRecording = false; // 의도적 종료임을 명시
